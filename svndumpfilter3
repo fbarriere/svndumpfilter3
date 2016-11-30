@@ -18,16 +18,11 @@
 #  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 """svndumpfilter3 [<options>] [<path> ...]
-
 A rewrite of Subversion's svndumpfilter in pure Python, that allows you to
 untangle move/copy operations between excluded and included sets of files/dirs,
 by converting them into additions.  If you use this option, it fetches the
 original files from a given repository.
-
-
-
 .. important::
-
    Some people have been reporting a bug with this script, that it will create
    an empty file on a large repository.  It worked great for the split that I
    had to do on my repository, but I have no time to fix the problem that occurs
@@ -37,36 +32,24 @@ original files from a given repository.
    and you're willing to pay hourly rates, I might be able to find someone to
    work on it (perhaps me (http://furius.ca/home/consulting.html), depending on
    schedule).
-
-
-
 The list of <path> paths are the paths to filter in the repository.  You pipe
 the dumpfile through stdin.  If you want to untangle the copy operations, you
 need a live repository and to use --untangle=REPOS_PATH.  Like this::
-
   cat dumpfile | svndumpfilter3 --untangle=/my/svnroot project1 project2
-
 The paths can include wildcards, and can consist of multiple parts, like::
-
   cat dumpfile | svndumpfilter3 tags/proj.*/subproj trunk/subproj
-
 Each component of the path is seperated and matched separately (hence the above
 would match for instance tags/proj-1.2/subproj but not tags/proj-1.2/a/subproj).
-
 .. note::
-
     This script's interface is only slightly different than Subversion's
     svndumpfilter, it does not take subcommands; its default behaviour is that
     of the 'include' subcommand of svndumpfilter.  If you need 'exclude'
     behaviour, just invoke it with the --exclude option.
-
 This is useful if you want to split a repository for which files have been
 copied or moved between filtered and non-filtered locations.  The resulting dump
 would be illegal if we just ignored these, because Subversion records the
 copy/move operations only.
-
 Chapter 5 hints about this, for more details about the problem, see there:
-
   Also, copied paths can give you some trouble. Subversion supports
   copy operations in the repository, where a new path is created by
   copying some already existing path. It is possible that at some
@@ -82,23 +65,17 @@ Chapter 5 hints about this, for more details about the problem, see there:
   not be readily available. If you suspect that you have any copies
   of this sort in your repository, you might want to rethink your
   set of included/excluded paths.
-
-
 Future Work
 -----------
-
 * We still need to implement the per-subcommand options of svndumpfilter.  Feel
   free to do so if you need it, or contact Martin Blais for subcontracting (I
   will do this for money, right now I have no time).
-
 Credits
 -------
-
 This code is originally based on Simon Tatham's svndumpfilter2, but we
 significantly changed the main loop and are using 'svnadmin dump' to fetch old
 revisions rather than working recursively with 'svnlook cat'.  The problem I was
 having was that svndumpfilter2 was running out of memory so I had to rewrite it.
-
 svndumpfilter2 tracks all files itself in order to replicate the required
 revisions, and it uses ``svnlook cat`` to fetch them, which is fast.  This
 consumes a lot of memory (I could not run it on a 126MB repository with 2800
@@ -108,56 +85,43 @@ produce the necessary lumps to insert them in the output.  This operation is
 much slower, but it does not matter if you have relatively few move/copy
 operations between excluded directories, which I think is by far the common case
 for multiple project roots (it was my case).
-
 [2009-01-08] An bugfix patch was provided by Jamie Townsend <jtownsen at
 progress dot com>.
-
 [2009-04-05] Minor path matching improvements by Matthias Troffaes <matthias
 dot troffaes at gmail dot com>
-
 [2012-02-21] A few fixs  from "Bernhard M. Wiedemann" <bwiedemann dot
 suse at de> were applied.
-
 Important Note
 --------------
-
 I cannot guarantee anything about your data (see the legal terms above).  If you
 lose data by using this program, THAT IS YOUR OWN PROBLEM.  Do not forget to
 MAKE BACKUPS in case something goes wrong.  This is your own responsibility.
 Always make backups.
-
-
 [2009-09-18]
 Here is a note from a user about a potential problem with the preservation of
 properties, with the >100 hr/week workload, I have no time to look into it at
 the moment:
-
   From "Fldvri Gyrgy"
-  To  	blais@furius.ca
-  Subject  	Critical bug in svndumpfilter3? 	Show full header
+  To      blais@furius.ca
+  Subject      Critical bug in svndumpfilter3?     Show full header
   Hello Martin,
-
   First of all, your tool helped me a lot in my task. But I think I have
   found a critical bug in svndumpfilter3 which can cause loss of
   revisioned properties. Please check it and distribute a fix if you have
   time.
-
   I experienced that some files and folders lost their revisioned
   properties after filtering them by svndumpfilter3. It was not some of
   the properties, but all of them, and I have not found any pattern at
   first. By comparing the input and output dumps I realized, that the
   problem occures with files/folders which has modifications committed.
-
   The root cause is that if a modification does not tough the properties,
   the lump of that change will not contain properties section at all, but
   svndumpfilter3 will add an empty one anyway. But this empty properties
   section means, that properties has been modified, and after modification
   there are no porperties anymore.
-
   I propose something like this: during read of lump check if there were
   properties section read at all, and use this info to decide if it should
   be written.
-
 """
 
 ## FIXME: TODO, incorporate change from Barry Warsaw:
@@ -218,6 +182,7 @@ if sys.version_info[:2] < (2, 4):
 import os, re, string, md5, warnings
 from os.path import basename
 from subprocess import Popen, PIPE
+import gzip
 
 
 
@@ -288,17 +253,22 @@ class InterestingPaths:
                 self.res[-1].append(re.compile('^' + component + '$'))
         """List of regular expressions to match against/exclude."""
 
-    def interesting(self, path):
+    def interesting(self, path, parent=False):
         """
         Return true if this path is considered included.
         """
+        
         match = False
+
+        if len(path) < 1:
+            return match
+        
         acomps = splitpath(path)
         assert len(acomps) > 0
         for rcomps in self.res:
             # if rcomps has more components than acomps
             # then we  cannot have a match, so skip this case
-            if len(rcomps) > len(acomps):
+            if len(rcomps) > len(acomps) and not parent:
                 continue
             # see if rcomps matches acomps
             for r, a in zip(rcomps, acomps):
@@ -561,6 +531,65 @@ def write_mkdir(f, dirname, create=1):
         if create:
             write_one_mkdir(f, tobecreated)
 
+
+def interm_dump(rev, repo, flog):
+    """Generate the intermediate dump or re-use any existing one.
+    """
+    
+    dumpfilename = "%s.dump.gz" % rev
+    
+    if os.path.exists(dumpfilename):
+        print >> flog, ("Re-using existing dump %s" % dumpfilename)
+    else:
+        print >> flog, ("Creating new dump %s" % dumpfilename)
+        
+        dumpfile = gzip.open(dumpfilename, "w")
+        cmd      = ('svnadmin', 'dump', '-r', rev, opts.repos)
+        fnull    = open('/dev/null', 'w')
+        
+        if opts.debug:
+            print >> flog, ("Running command: '%s'" % cmd)
+    
+        p1 = Popen(cmd, stdout=dumpfile, stderr=fnull)
+        
+        p1.wait()
+        if p1.returncode != 0:
+            raise SystemExit("Error: Running %s" % " ".join(cmd))
+        
+        dumpfile.close()
+
+    return gzip.open(dumpfilename, "r")
+    
+
+def interm_filter(rev, dumpfile, srcpath, flog):
+    """Filter an intermediate dump and generate the filtered dump to
+    be integrated
+    """
+    
+    filteredh    = hash(srcpath)
+    filteredname = "%s%s.filtered" % (filteredh, rev)
+        
+    if os.path.exists(filteredname):
+        print >> flog, ("Re-using existing filtered dump %s" % filteredname)
+    else:
+        print >> flog, ("Creating a new filtered dump %s" % filteredname)
+        
+        filteredfile = open(filteredname, "w")
+        cmd          = ('svndumpfilter', '--skip-missing-merge-sources', 'include', srcpath)
+        fnull        = open('/dev/null', 'w')
+
+        p2 = Popen(cmd, stdin=dumpfile, stdout=filteredfile, stderr=fnull)
+
+        p2.wait()
+        if p2.returncode != 0:
+            raise SystemExit("Error: Running %s" % " ".join(cmd))
+        
+        filteredfile.close()
+        dumpfile.close()
+
+    return open(filteredname, "r")
+
+
 def fetch_rev_rename(repos, srcrev, srcpath, path, fout, flog, format):
     """
     Dumps 'srcpath' at revision 'srcrev' from repository 'repos',
@@ -572,17 +601,21 @@ def fetch_rev_rename(repos, srcrev, srcpath, path, fout, flog, format):
 
     # Must find the source node, as it existed in the given revision, and copy
     # it in full.
-    cmd = ('svnadmin', 'dump', '-r', str(srcrev),
-           opts.repos, srcpath)
-    cmd_filter = ('svndumpfilter', 'include', srcpath)
-    if opts.debug:
-        print >> flog, ("Running command: '%s | %s'" %
-                        (' '.join(cmd), ' '.join(cmd_filter)))
-    fnull = open('/dev/null', 'w')
-    p1 = Popen(cmd, stdout=PIPE, stderr=fnull)
-    p2 = Popen(cmd_filter, stdin=p1.stdout,
-               stdout=PIPE, stderr=fnull)
-    fs = p2.stdout
+    #cmd = ('svnadmin', 'dump', '-r', str(srcrev),
+    #       opts.repos)
+    #cmd_filter = ('svndumpfilter', '--skip-missing-merge-sources', 'include', srcpath)
+    #if opts.debug:
+    #    print >> flog, ("Running command: '%s | %s'" %
+    #                    (' '.join(cmd), ' '.join(cmd_filter)))
+    #fnull = open('/dev/null', 'w')
+    #p1 = Popen(cmd, stdout=PIPE, stderr=fnull)
+    #p2 = Popen(cmd_filter, stdin=p1.stdout,
+    #           stdout=PIPE, stderr=fnull)
+    #fs = p2.stdout
+    
+    intermdump = interm_dump(str(srcrev), opts.repos, flog)
+    intermfilt = interm_filter(str(srcrev), intermdump, srcpath, flog)
+    fs = intermfilt
 
     #
     # Process the subdump.
@@ -614,7 +647,8 @@ def fetch_rev_rename(repos, srcrev, srcpath, path, fout, flog, format):
 
         # Translate filename to its new location.
         path_sub = lump_sub.hdrdict['Node-path']
-        assert path_sub.startswith(srcpath)
+        if not path_sub.startswith(srcpath):
+            raise SystemExit("Path %s does not start with %s" % (path_sub, srcpath))
         path_sub_new = path + path_sub[len(srcpath):]
         lump_sub.sethdr('Node-path', path_sub_new)
         print >> flog, ("%s:    Converted  '%s' to '%s'" %
@@ -630,9 +664,9 @@ def fetch_rev_rename(repos, srcrev, srcpath, path, fout, flog, format):
 
         write_lump(fout, lump_sub)
 
-    p2.wait()
-    if p2.returncode != 0:
-        raise SystemExit("Error: Running %s" % " ".join(cmd + ("##",) + cmd_filter))
+    #p2.wait()
+    #if p2.returncode != 0:
+    #    raise SystemExit("Error: Running %s" % " ".join(cmd + ("##",) + cmd_filter))
 
 
 def parse_options():
@@ -843,26 +877,11 @@ def main():
                 '   %-10s %-10s %s' %
                 (d.get('Node-kind', ''), d['Node-action'], d['Node-path']))
 
-        module=os.environ["MODULE"]
-        if lump.hdrdict.has_key("Node-copyfrom-path") and not re.search('/'+module+'(/|$)', lump.hdrdict["Node-copyfrom-path"]):
-            # catch copies of whole trunk / branches (that include our module)
-            origsrcpath = lump.hdrdict["Node-copyfrom-path"]
-            srcrevision = lump.hdrdict["Node-copyfrom-rev"]
-            re_interesting='((^branches/.+)|(^tags/[^/]+$)|(^trunk$))'
-            srcpath = re.sub(re_interesting, '\\1/' + module, origsrcpath)
-            print >> flog, "Node-copyfrom-path: " + srcpath + "R:" + srcrevision + "  NodeP:" + lump.hdrdict["Node-path"]
-            if lump.hdrdict["Node-copyfrom-path"] != srcpath:
-                svncmd = "svn ls -r " + srcrevision + " file://" + opts.repos + "/" + origsrcpath + " | grep -q ^" + module +"/$"
-                print >> flog, svncmd
-                if os.system(svncmd) == 0:
-                    write_mkdir(fw, lump.hdrdict["Node-path"])
-                    lump.hdrdict["Node-path"] = re.sub(re_interesting, '\\1/' + module, lump.hdrdict["Node-path"])
-                    print >> flog, "replaced Node-path:" + lump.hdrdict["Node-path"] + " ## Node-copyfrom-path: " + srcpath
-                    lump.hdrdict["Node-copyfrom-path"] = srcpath
-
         # Filter out the uninteresting lumps
         path = lump.hdrdict['Node-path']
         if not paths.interesting(path):
+            if paths.interesting(path, True) and lump.hdrdict['Node-action'] == 'add' and lump.hdrdict['Node-kind'] == 'dir':
+                write_lump(fw, lump)
             # add missing branch dirs
             if lump.hdrdict['Node-action'] == 'add' and lump.hdrdict['Node-kind'] == 'dir' and re.match("((^branches)|(^tags/?[^/]*$)|(^trunk$))",lump.hdrdict['Node-path']):
                 write_mkdir(fw, lump.hdrdict['Node-path'])
